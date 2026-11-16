@@ -1,0 +1,12 @@
+{
+  "builtin": ["email", "url_host", "mac", "ip"],
+  "words": {
+    "NAME": ["홍길동", "gildong.hong"],
+    "PROJ": ["ProjectX"]
+  },
+  "patterns": {
+    "PKG": ["com\\.mycompany(?:\\.\\w+)+"],
+    "HOST": ["[\\w-]+(?:\\.[\\w-]+)*\\.mycompany\\.com"],
+    "ISSUE": ["\\b[A-Z][A-Z0-9]+-\\d+\\b"]
+  }
+}

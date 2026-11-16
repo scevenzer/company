@@ -1,0 +1,27 @@
+{
+  "days": 7,
+  "author": "",
+  "git_repos": [
+    "D:/work/repo1",
+    "D:/work/repo2"
+  ],
+  "gerrit": {
+    "url": "https://gerrit.example.com",
+    "user": "my.id",
+    "password_env": "GERRIT_PW",
+    "auth": "basic"
+  },
+  "jira": {
+    "url": "https://jira.example.com",
+    "user": "my.id",
+    "password_env": "JIRA_PW",
+    "auth": "basic",
+    "jql": "assignee = currentUser() AND updated >= -{days}d ORDER BY updated DESC"
+  },
+  "ssl": {
+    "verify": true,
+    "ca_file": ""
+  },
+  "no_proxy": false,
+  "timeout": 30
+}

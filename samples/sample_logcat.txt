@@ -1,0 +1,54 @@
+11-16 09:59:58.100  1000  1045 I ActivityManager: Start proc 4321:com.example.shop/u0a123 for activity {com.example.shop/com.example.shop.MainActivity}
+11-16 10:00:00.200  4321  4321 D ShopMain: onCreate
+11-16 10:00:01.300  4321  4321 I ShopMain: load cart user=42
+11-16 10:00:01.512  4321  4321 D AndroidRuntime: Shutting down VM
+11-16 10:00:01.515  4321  4321 E AndroidRuntime: FATAL EXCEPTION: main
+11-16 10:00:01.515  4321  4321 E AndroidRuntime: Process: com.example.shop, PID: 4321
+11-16 10:00:01.515  4321  4321 E AndroidRuntime: java.lang.RuntimeException: Unable to start activity ComponentInfo{com.example.shop/com.example.shop.MainActivity}: java.lang.NullPointerException: Attempt to invoke virtual method 'int java.lang.String.length()' on a null object reference
+11-16 10:00:01.515  4321  4321 E AndroidRuntime:     at android.app.ActivityThread.performLaunchActivity(ActivityThread.java:3449)
+11-16 10:00:01.515  4321  4321 E AndroidRuntime:     at android.app.ActivityThread.handleLaunchActivity(ActivityThread.java:3601)
+11-16 10:00:01.515  4321  4321 E AndroidRuntime:     at android.os.Looper.loop(Looper.java:223)
+11-16 10:00:01.515  4321  4321 E AndroidRuntime: Caused by: java.lang.NullPointerException: Attempt to invoke virtual method 'int java.lang.String.length()' on a null object reference
+11-16 10:00:01.515  4321  4321 E AndroidRuntime:     at com.example.shop.cart.CartLoader.load(CartLoader.java:57)
+11-16 10:00:01.515  4321  4321 E AndroidRuntime:     at com.example.shop.MainActivity.onCreate(MainActivity.java:31)
+11-16 10:00:01.515  4321  4321 E AndroidRuntime:     at android.app.Activity.performCreate(Activity.java:7994)
+11-16 10:00:01.515  4321  4321 E AndroidRuntime:     ... 11 more
+11-16 10:00:01.600  1000  1045 I ActivityManager: Process com.example.shop (pid 4321) has died: fg  TOP
+11-16 10:00:30.000  1000  1045 I ActivityManager: Start proc 4400:com.example.shop/u0a123 for activity {com.example.shop/com.example.shop.MainActivity}
+11-16 10:00:31.100  4400  4400 I ShopMain: load cart user=42
+11-16 10:00:31.250  4400  4400 E AndroidRuntime: FATAL EXCEPTION: main
+11-16 10:00:31.250  4400  4400 E AndroidRuntime: Process: com.example.shop, PID: 4400
+11-16 10:00:31.250  4400  4400 E AndroidRuntime: java.lang.RuntimeException: Unable to start activity ComponentInfo{com.example.shop/com.example.shop.MainActivity}: java.lang.NullPointerException: Attempt to invoke virtual method 'int java.lang.String.length()' on a null object reference
+11-16 10:00:31.250  4400  4400 E AndroidRuntime:     at android.app.ActivityThread.performLaunchActivity(ActivityThread.java:3449)
+11-16 10:00:31.250  4400  4400 E AndroidRuntime: Caused by: java.lang.NullPointerException: Attempt to invoke virtual method 'int java.lang.String.length()' on a null object reference
+11-16 10:00:31.250  4400  4400 E AndroidRuntime:     at com.example.shop.cart.CartLoader.load(CartLoader.java:57)
+11-16 10:00:31.250  4400  4400 E AndroidRuntime:     at com.example.shop.MainActivity.onCreate(MainActivity.java:31)
+11-16 10:00:31.250  4400  4400 E AndroidRuntime:     at android.app.Activity.performCreate(Activity.java:7994)
+11-16 10:00:31.300  1000  1045 I ActivityManager: Process com.example.shop (pid 4400) has died: fg  TOP
+11-16 10:01:50.000  1000  1045 I ActivityManager: Start proc 4500:com.example.shop/u0a123 for activity {com.example.shop/com.example.shop.MainActivity}
+11-16 10:01:55.400  4500  4500 I ShopMain: sync start
+11-16 10:01:55.900  4500  4530 W SyncWorker: server slow, waiting
+11-16 10:02:10.120  1000  1060 E ActivityManager: ANR in com.example.shop (com.example.shop/.MainActivity)
+11-16 10:02:10.120  1000  1060 E ActivityManager: PID: 4500
+11-16 10:02:10.120  1000  1060 E ActivityManager: Reason: Input dispatching timed out (Waiting to send non-key event because the touched window has not finished processing certain input events that were delivered to it over 500.0ms ago.)
+11-16 10:02:10.120  1000  1060 E ActivityManager: Load: 3.2 / 2.9 / 2.1
+11-16 10:02:10.120  1000  1060 E ActivityManager: CPU usage from 0ms to 5012ms later:
+11-16 10:02:10.120  1000  1060 E ActivityManager:   45% 4500/com.example.shop: 30% user + 15% kernel
+11-16 10:02:11.000  1000  1045 I ActivityManager: Killing 4500:com.example.shop/u0a123 (adj 0): bg anr
+11-16 10:03:00.000  1000  1045 I ActivityManager: Start proc 5000:com.example.camera/u0a130 for activity {com.example.camera/.CameraActivity}
+11-16 10:03:04.500  5000  5022 I CameraNative: open stream 1920x1080
+11-16 10:03:05.010  5000  5022 F libc    : Fatal signal 11 (SIGSEGV), code 1 (SEGV_MAPERR), fault addr 0x0 in tid 5022 (ImageWorker), pid 5000 (example.camera)
+11-16 10:03:05.120  5050  5050 F DEBUG   : *** *** *** *** *** *** *** *** *** *** *** *** *** *** *** ***
+11-16 10:03:05.120  5050  5050 F DEBUG   : Build fingerprint: 'generic/sdk_phone/generic:14/UP1A.231005.007/1:userdebug/test-keys'
+11-16 10:03:05.120  5050  5050 F DEBUG   : ABI: 'arm64'
+11-16 10:03:05.120  5050  5050 F DEBUG   : pid: 5000, tid: 5022, name: ImageWorker  >>> com.example.camera <<<
+11-16 10:03:05.120  5050  5050 F DEBUG   : signal 11 (SIGSEGV), code 1 (SEGV_MAPERR), fault addr 0x0
+11-16 10:03:05.120  5050  5050 F DEBUG   : Cause: null pointer dereference
+11-16 10:03:05.130  5050  5050 F DEBUG   : backtrace:
+11-16 10:03:05.130  5050  5050 F DEBUG   :       #00 pc 000000000001a2b4  /data/app/com.example.camera/lib/arm64/libimgproc.so (ImageBuffer::copyFrom(unsigned char const*, unsigned long)+52)
+11-16 10:03:05.130  5050  5050 F DEBUG   :       #01 pc 000000000001b0f8  /data/app/com.example.camera/lib/arm64/libimgproc.so (Pipeline::process(Frame*)+212)
+11-16 10:03:05.130  5050  5050 F DEBUG   :       #02 pc 00000000000c1e44  /apex/com.android.runtime/lib64/bionic/libc.so (__pthread_start(void*)+204)
+11-16 10:03:05.400  1000  1045 I ActivityManager: Process com.example.camera (pid 5000) has died: fg  TOP
+11-16 10:04:00.000  1000  1045 I ActivityManager: Start proc 5200:com.example.gallery/u0a140 for activity {com.example.gallery/.GalleryActivity}
+11-16 10:04:20.000  5200  5200 W xample.gallery: Throwing OutOfMemoryError "Failed to allocate a 268435472 byte allocation with 100663296 free bytes and 189MB until OOM, target footprint 201326592, growth limit 402653184"
+11-16 10:04:40.000   320   320 I lowmemorykiller: Kill 'com.example.music' (5300), uid 10150, oom_score_adj 905 to free 85432kB rss, 20412kB swap; reason: low watermark is breached

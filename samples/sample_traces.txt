@@ -1,0 +1,26 @@
+
+----- pid 4500 at 2026-11-16 10:02:10 -----
+Cmd line: com.example.shop
+Build fingerprint: 'generic/sdk_phone/generic:14/UP1A.231005.007/1:userdebug/test-keys'
+ABI: 'arm64'
+
+DALVIK THREADS (2):
+"main" prio=5 tid=1 Blocked
+  | group="main" sCount=1 ucsCount=0 flags=1 obj=0x72a1b0c8 self=0xb400007a
+  | sysTid=4500 nice=-10 cgrp=top-app sched=0/0 handle=0x7b2c4f84f8
+  at com.example.shop.sync.SyncManager.getState(SyncManager.java:88)
+  - waiting to lock <0x0a1b2c3d> (a java.lang.Object) held by thread 14
+  at com.example.shop.MainActivity.onResume(MainActivity.java:64)
+  at android.app.Instrumentation.callActivityOnResume(Instrumentation.java:1564)
+  at android.app.Activity.performResume(Activity.java:8140)
+
+"SyncWorker" prio=5 tid=14 Native
+  | group="main" sCount=1 ucsCount=0 flags=1 obj=0x12c4a0d0 self=0xb400007b
+  | sysTid=4530 nice=0 cgrp=top-app sched=0/0 handle=0x79a1c2fcb0
+  native: #00 pc 00000000000a1b2c  /apex/com.android.runtime/lib64/bionic/libc.so (recvfrom+4)
+  at java.net.SocketInputStream.socketRead0(Native method)
+  at com.example.shop.sync.SyncManager.pull(SyncManager.java:132)
+  - locked <0x0a1b2c3d> (a java.lang.Object)
+  at com.example.shop.sync.SyncWorker.run(SyncWorker.java:41)
+
+----- end 4500 -----
