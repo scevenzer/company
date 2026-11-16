@@ -6,10 +6,13 @@ logcat / bugreport / ANR traces / tombstone 파일에서 크래시·ANR만 골�
 같은 것끼리 묶고, 처음 터진 시각과 직전 로그를 붙여 한 장으로 정리한다.
 파이썬 표준 라이브러리만 쓴다(3.6 이상). 네트워크를 쓰지 않는다.
 
-    python android_log.py logcat.txt
-    python android_log.py bugreport.zip -o report.md
-    python android_log.py logs/ --pkg com.example --context 30
-    adb logcat -d | python android_log.py -
+    wk log logcat.txt
+    wk log bugreport.zip -o report.md
+    wk log logs/ --pkg com.example --context 30
+    adb logcat -d | wk log -
+
+이 파일 하나만 복사해 `python android_log.py 파일` 로 써도 된다.
+못 읽는 줄 형식이나 따로 찾고 싶은 로그는 wk.json 의 log 칸에 더한다.
 """
 import argparse
 import collections
@@ -517,23 +520,30 @@ def sources(paths):
                 yield p, f
 
 
-def main(argv=None):
-    ap = argparse.ArgumentParser(description='안드로이드 로그에서 크래시·ANR을 골라 정리합니다.')
+def load_section(path, name):
+    """wk.json 에서 이 도구의 칸만 읽는다. 찾는 순서: 지정한 경로 → 지금 폴더 → 도구 폴더."""
+    here = os.path.dirname(os.path.abspath(__file__))
+    for p in ([path] if path else [os.path.join(os.getcwd(), 'wk.json'), os.path.join(here, 'wk.json')]):
+        if os.path.exists(p):
+            with io.open(p, encoding='utf-8-sig') as f:
+                return json.load(f).get(name) or {}
+    if path:
+        raise SystemExit('설정 파일이 없습니다: ' + path)
+    return {}
+
+
+def main(argv=None, prog=None):
+    ap = argparse.ArgumentParser(prog=prog, description='안드로이드 로그에서 크래시·ANR을 골라 정리합니다.')
     ap.add_argument('paths', nargs='+', help='logcat·bugreport·traces·tombstone 파일, 폴더, zip, gz. 표준 입력은 -')
     ap.add_argument('-o', '--out', help='결과를 저장할 파일(없으면 화면에 출력)')
     ap.add_argument('--pkg', help='이 글자가 들어간 프로세스만 본다 (예: com.example)')
     ap.add_argument('--context', type=int, default=15, help='크래시 직전 로그 줄 수 (기본 15)')
     ap.add_argument('--top', type=int, default=20, help='상세로 보여 줄 종류 수 (기본 20)')
     ap.add_argument('--json', action='store_true', help='마크다운 대신 JSON으로 출력')
-    ap.add_argument('--config', default='android_log.json',
-                    help='추가 규칙 파일 (기본 android_log.json, 없으면 기본 규칙만)')
+    ap.add_argument('-c', '--config', help='설정 파일 (기본 wk.json 의 log 칸, 없으면 기본 규칙만)')
     args = ap.parse_args(argv)
 
-    cfg = {}
-    if os.path.exists(args.config):
-        with io.open(args.config, encoding='utf-8-sig') as f:
-            cfg = json.load(f)
-    an = Analyzer(context=args.context, cfg=cfg)
+    an = Analyzer(context=args.context, cfg=load_section(args.config, 'log'))
     for name, lines in sources(args.paths):
         an.feed(name, lines)
     an.finalize(pkg=args.pkg)

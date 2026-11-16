@@ -17,7 +17,10 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
 import android_log  # noqa: E402
 import mask  # noqa: E402
+import status  # noqa: E402
+import todo  # noqa: E402
 import weekly_report  # noqa: E402
+import wkcore  # noqa: E402
 
 SAMPLES = os.path.join(ROOT, 'samples')
 
@@ -71,8 +74,7 @@ def test_android_log():
     assert an3.events[0]['title'] == 'java.lang.IllegalStateException: boom', an3.events
 
     # 설정 파일만으로 새 줄 형식과 새 사건 규칙을 더할 수 있어야 한다
-    with io.open(os.path.join(ROOT, 'android_log.sample.json'), encoding='utf-8') as f:
-        cfg = json.load(f)
+    cfg = android_log.load_section(os.path.join(ROOT, 'wk.sample.json'), 'log')
     cfg['events'] = [{'name': '결제 실패', 'pattern': r'payment failed code=\d+', 'tag': 'PayModule'}]
     studio = ['2026-11-16 10:00:00.123  777-777  AndroidRuntime          com.example.new  E  FATAL EXCEPTION: main',
               '                                                    Process: com.example.new, PID: 777',
@@ -109,6 +111,9 @@ def test_mask():
     assert back == src, back
     out2, _ = mask.do_mask('APP-101 과 APP-202', rules, mapping)
     assert out2 == 'ISSUE_001 과 ISSUE_002', out2
+    sample = mask.load_section(os.path.join(ROOT, 'wk.sample.json'), 'mask')
+    out3, _ = mask.do_mask('com.mycompany.shop 의 홍길동', sample, {})
+    assert out3 == 'PKG_001 의 NAME_001', out3
 
 
 class Fake(BaseHTTPRequestHandler):
@@ -116,7 +121,22 @@ class Fake(BaseHTTPRequestHandler):
 
     def do_GET(self):
         Fake.seen.append((self.path, self.headers.get('Authorization')))
-        if self.path.startswith('/gerrit/a/changes/'):
+        if self.path.startswith('/gerrit/a/changes/') and 'status%3Aopen' in self.path:
+            if 'attention' in self.path:  # 옛 Gerrit 은 이 검색식을 모른다
+                self.send_error(400)
+                return
+            if 'reviewer' in self.path:
+                rows = [{'_number': 4561, 'subject': 'APP-131 Reduce cold start', 'project': 'p', 'branch': 'main',
+                         'owner': {'name': 'Lee'}}]
+            else:
+                rows = [{'_number': 4540, 'subject': 'APP-117 Add retry', 'project': 'p', 'branch': 'main',
+                         'labels': {'Verified': {'rejected': {}}}, 'unresolved_comment_count': 2, 'mergeable': False}]
+            body = ")]}'\n" + json.dumps(rows)
+        elif self.path.startswith('/jira/rest/api/2/search') and 'statusCategory' in self.path:
+            body = json.dumps({'issues': [{'key': 'APP-117', 'fields': {
+                'summary': '동기화 ANR', 'status': {'name': 'In Progress'}, 'priority': {'name': 'High'},
+                'updated': '2026-01-05T09:00:00.000+0900', 'duedate': '2026-01-02'}}]})
+        elif self.path.startswith('/gerrit/a/changes/'):
             if 'reviewer' in self.path:
                 rows = [{'_number': 4533, 'subject': 'APP-120 Review me', 'status': 'MERGED', 'project': 'p', 'branch': 'main'}]
             else:
@@ -148,13 +168,40 @@ def test_weekly():
     threading.Thread(target=server.serve_forever, daemon=True).start()
     base = 'http://127.0.0.1:%d' % server.server_port
     os.environ['WT_TEST_PW'] = 'secret'
-    cfg = {'days': 7, 'no_proxy': True,
+    cfg = {'days': 7, 'no_proxy': True, 'todo_file': 'my_todo.md',
            'gerrit': {'url': base + '/gerrit', 'user': 'me', 'password_env': 'WT_TEST_PW'},
            'jira': {'url': base + '/jira', 'password_env': 'WT_TEST_PW', 'auth': 'bearer'}}
     tmp = tempfile.mkdtemp()
     cfg_path, out_path = os.path.join(tmp, 'config.json'), os.path.join(tmp, 'weekly.md')
     with io.open(cfg_path, 'w', encoding='utf-8') as f:
         json.dump(cfg, f)
+    # 할 일: 글 파일에 적고, 끝내고, 지운다
+    def wk_todo(*a):
+        with contextlib.redirect_stdout(io.StringIO()) as buf:
+            todo.main(list(a) + ['-c', cfg_path])
+        return buf.getvalue()
+    wk_todo('add', '회의', '자료', '정리')
+    wk_todo('add', '로그 범위 검토')
+    wk_todo('add', '지울 것')
+    assert '끝냄: 회의 자료 정리' in wk_todo('done', '1')
+    shown = wk_todo('rm', '2')
+    assert '지움: 지울 것' in shown and '남은 일 1개' in shown and '1. 로그 범위 검토' in shown, shown
+    with io.open(os.path.join(tmp, 'my_todo.md'), encoding='utf-8') as f:
+        raw = f.read()
+    assert raw.startswith('# 할 일') and '- [x] 회의 자료 정리 (완료 ' in raw and '- [ ] 로그 범위 검토' in raw, raw
+    assert '✓ 회의 자료 정리' in wk_todo('all')
+
+    # 오늘 볼 것
+    with contextlib.redirect_stdout(io.StringIO()) as buf:
+        status.main(['-c', cfg_path])
+    st = buf.getvalue()
+    assert '나를 기다리는 변경' not in st, st
+    assert '## 리뷰 요청받은 변경 (1)' in st and '4561 APP-131 Reduce cold start — 작성자 Lee' in st, st
+    assert '4540 APP-117 Add retry — Verified 거부 · 댓글 2개 미해결 · 충돌' in st, st
+    assert 'APP-117 [In Progress · High] 동기화 ANR — 기한 지남 01-02' in st, st
+    assert '## 할 일 (1)' in st and '- 로그 범위 검토' in st, st
+    assert base + '/gerrit/c/p/+/4540' in st and base + '/jira/browse/APP-117' in st, st
+
     with contextlib.redirect_stderr(io.StringIO()):
         weekly_report.main(['-c', cfg_path, '-o', out_path, '--prompt'])
     server.shutdown()
@@ -163,6 +210,8 @@ def test_weekly():
     done = text.split('## 완료')[1].split('## 진행 중')[0]
     doing = text.split('## 진행 중')[1].split('## 이슈 번호 없는 작업')[0]
     assert 'APP-101' in done and 'Gerrit 4521 MERGED' in done, text
+    assert '- 회의 자료 정리' in done, text
+    assert '- 로그 범위 검토' in text.split('## 다음 주 계획')[1].split('##')[0], text
     assert 'APP-117' in doing, text
     assert 'Gerrit 4550 NEW: Tidy build files' in text.split('## 이슈 번호 없는 작업')[1], text
     assert 'Gerrit 4533' in text.split('## 리뷰한 변경')[1], text
@@ -171,9 +220,13 @@ def test_weekly():
     assert auths['/gerrit/a/changes/'].startswith('Basic '), auths
     assert auths['/jira/rest/api/2/search'] == 'Bearer secret', auths
 
+    for mod in (weekly_report, status):
+        with contextlib.redirect_stdout(io.StringIO()) as buf:
+            mod.main(['--demo'])
+        assert 'APP-125' in buf.getvalue()
     with contextlib.redirect_stdout(io.StringIO()) as buf:
-        weekly_report.main(['--demo'])
-    assert 'APP-125' in buf.getvalue()
+        weekly_report.main(['--demo', '--json'])
+    assert json.loads(buf.getvalue())['items'][0]['key'] == 'APP-101'
 
     # 칸 이름과 이슈 번호 규칙은 설정으로 바꾼다
     opts = {'title': 'Weekly', 'issue_key_pattern': r'#\d+',
@@ -184,7 +237,7 @@ def test_weekly():
     assert '[#77]' in text.split('## In progress')[1] and '다음 주 계획' not in text, text
 
     os.environ['WT_COOKIE'] = 'sid=1'
-    assert weekly_report.expand('a ${WT_COOKIE} b') == 'a sid=1 b'
+    assert wkcore.expand('a ${WT_COOKIE} b') == 'a sid=1 b'
 
 
 if __name__ == '__main__':

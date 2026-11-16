@@ -1,0 +1,74 @@
+{
+  "days": 7,
+  "author": "",
+  "git_repos": [
+    "D:/work/repo1",
+    "D:/work/repo2"
+  ],
+  "gerrit": {
+    "url": "https://gerrit.example.com",
+    "user": "my.id",
+    "password_env": "GERRIT_PW",
+    "auth": "basic",
+    "query_mine": "owner:self -age:{days}d",
+    "query_reviewed": "reviewer:self -owner:self -age:{days}d"
+  },
+  "jira": {
+    "url": "https://jira.example.com",
+    "user": "my.id",
+    "password_env": "JIRA_PW",
+    "auth": "basic",
+    "api_path": "/rest/api/2/search",
+    "jql": "assignee = currentUser() AND updated >= -{days}d ORDER BY updated DESC"
+  },
+  "status": {
+    "gerrit": [
+      {"title": "나를 기다리는 변경", "query": "attention:self status:open", "optional": true},
+      {"title": "리뷰 요청받은 변경", "query": "status:open reviewer:self -owner:self"},
+      {"title": "내 변경", "query": "status:open owner:self", "mine": true}
+    ],
+    "jira": [
+      {"title": "내 이슈", "jql": "assignee = currentUser() AND statusCategory != Done ORDER BY priority DESC, updated DESC"}
+    ]
+  },
+  "report": {
+    "title": "주간 보고",
+    "issue_key_pattern": "\\b[A-Z][A-Z0-9]+-\\d+\\b",
+    "sections": {
+      "done": "완료",
+      "doing": "진행 중",
+      "loose": "이슈 번호 없는 작업",
+      "reviewed": "리뷰한 변경",
+      "extra": ["다음 주 계획", "이슈·도움이 필요한 점"]
+    }
+  },
+  "prompt_file": "",
+  "todo_file": "todo.md",
+  "log": {
+    "line_patterns": [
+      "^(?P<ts>\\d{4}-\\d\\d-\\d\\d \\d\\d:\\d\\d:\\d\\d\\.\\d+)\\s+(?P<pid>\\d+)-(?P<tid>\\d+)\\s+(?P<tag>\\S+)\\s+\\S+\\s+(?P<level>[VDIWEA])\\s+(?P<msg>.*)$"
+    ],
+    "continuation_lines": true,
+    "events": [
+      {"name": "결제 실패", "pattern": "payment failed code=\\d+", "tag": "PayModule", "levels": "EF"}
+    ]
+  },
+  "mask": {
+    "builtin": ["email", "url_host", "mac", "ip"],
+    "words": {
+      "NAME": ["홍길동", "gildong.hong"],
+      "PROJ": ["ProjectX"]
+    },
+    "patterns": {
+      "PKG": ["com\\.mycompany(?:\\.\\w+)+"],
+      "HOST": ["[\\w-]+(?:\\.[\\w-]+)*\\.mycompany\\.com"],
+      "ISSUE": ["\\b[A-Z][A-Z0-9]+-\\d+\\b"]
+    }
+  },
+  "ssl": {
+    "verify": true,
+    "ca_file": ""
+  },
+  "no_proxy": false,
+  "timeout": 30
+}

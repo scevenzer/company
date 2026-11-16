@@ -1,8 +1,8 @@
-config.json
-rules.json
-android_log.json
+wk.json
 mask_map.json
+todo.md
 prompt.txt
+NEEDS.md
 *_masked.*
 *_restored.*
 weekly*.md

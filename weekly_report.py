@@ -1,33 +1,28 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""주간 보고 수집기.
+"""주간 보고 — 지난 며칠의 내 git 커밋, Gerrit 변경, Jira 이슈, 할 일을 모아 초안을 만든다.
 
-지난 며칠 동안의 내 git 커밋, Gerrit 변경, Jira 이슈를 모아
-이슈 번호별로 묶은 주간 보고 초안(마크다운)을 만든다.
-파이썬 표준 라이브러리만 쓴다(3.6 이상). 설정 파일에 적은 사내 주소 말고는 접속하지 않는다.
+이슈 번호별로 묶어 완료와 진행 중으로 나눈다. 결과는 마크다운 글이다.
 
-    python weekly_report.py --demo                 # 가짜 자료로 모양 보기
-    python weekly_report.py -c config.json -o weekly.md
-    python weekly_report.py -c config.json --prompt   # 사내 AI에 붙여 넣을 주문서 포함
-    python weekly_report.py -c config.json --only git,gerrit
-
-비밀번호는 설정 파일에 적지 않는다. 환경 변수(password_env)에서 읽고, 없으면 물어본다.
+    wk weekly --demo               가짜 자료로 모양 보기
+    wk weekly -o weekly.md
+    wk weekly --prompt             사내 AI에 붙여 넣을 주문서 포함
+    wk weekly --only git,gerrit
+    wk weekly --json               다른 프로그램이 읽을 자료로
 """
 import argparse
-import base64
 import collections
 import datetime
-import getpass
 import io
 import json
 import os
 import re
-import ssl
 import subprocess
 import sys
 import urllib.error
-import urllib.parse
-import urllib.request
+
+import todo
+import wkcore
 
 KEY_RE = re.compile(r'\b[A-Z][A-Z0-9]+-\d+\b')
 
@@ -40,51 +35,8 @@ PROMPT = """아래 자료로 주간 보고를 써 주세요.
 --- 자료 ---
 """
 
-
-def secret(cfg, label):
-    env = cfg.get('password_env')
-    if env and os.environ.get(env):
-        return os.environ[env]
-    if sys.stdin.isatty():
-        return getpass.getpass('%s 비밀번호(또는 토큰): ' % label)
-    raise RuntimeError('%s 비밀번호가 없습니다. 환경 변수 %s 를 넣어 주세요.' % (label, env or '(password_env 미설정)'))
-
-
-def expand(value):
-    """${이름} 을 환경 변수 값으로 바꾼다."""
-    return re.sub(r'\$\{(\w+)\}', lambda m: os.environ.get(m.group(1), ''), value)
-
-
-def http_get(url, cfg, label, net):
-    handlers = []
-    sslcfg = net.get('ssl', {})
-    ctx = ssl.create_default_context(cafile=sslcfg.get('ca_file') or None)
-    if sslcfg.get('verify') is False:
-        ctx.check_hostname = False
-        ctx.verify_mode = ssl.CERT_NONE
-    handlers.append(urllib.request.HTTPSHandler(context=ctx))
-    if net.get('no_proxy'):
-        handlers.append(urllib.request.ProxyHandler({}))
-    headers = {'Accept': 'application/json'}
-    for k, v in (cfg.get('headers') or {}).items():  # 쿠키·SSO 등 다른 인증은 여기로
-        headers[k] = expand(v)
-    auth = cfg.get('auth', 'basic')
-    if auth == 'none':
-        pass
-    elif auth == 'bearer':
-        headers['Authorization'] = 'Bearer ' + secret(cfg, label)
-    elif cfg.get('user'):
-        pw = secret(cfg, label)
-        if auth == 'digest':
-            mgr = urllib.request.HTTPPasswordMgrWithDefaultRealm()
-            mgr.add_password(None, url, cfg['user'], pw)
-            handlers.append(urllib.request.HTTPDigestAuthHandler(mgr))
-        else:
-            token = base64.b64encode(('%s:%s' % (cfg['user'], pw)).encode('utf-8')).decode('ascii')
-            headers['Authorization'] = 'Basic ' + token
-    opener = urllib.request.build_opener(*handlers)
-    with opener.open(urllib.request.Request(url, headers=headers), timeout=net.get('timeout', 30)) as r:
-        return r.read().decode('utf-8', 'replace')
+SECTIONS = {'done': '완료', 'doing': '진행 중', 'loose': '이슈 번호 없는 작업', 'reviewed': '리뷰한 변경',
+            'extra': ['다음 주 계획', '이슈·도움이 필요한 점']}
 
 
 def fetch_git(cfg, days):
@@ -109,44 +61,27 @@ def fetch_git(cfg, days):
     return out
 
 
-def fetch_gerrit(cfg, days, net):
+def fetch_gerrit(cfg, days):
     g = cfg['gerrit']
-    base = g['url'].rstrip('/')
-    prefix = g.get('api_prefix')
-    if prefix is None:
-        prefix = '/a' if (g.get('user') or g.get('auth') == 'bearer') else ''
 
     def query(q):
-        url = '%s%s/changes/?q=%s&n=200' % (base, prefix, urllib.parse.quote(q))
-        text = http_get(url, g, 'Gerrit', net)
-        if text.startswith(")]}'"):
-            text = text.split('\n', 1)[1]
-        rows = []
-        for c in json.loads(text):
-            rows.append({'number': c.get('_number'), 'subject': c.get('subject', ''), 'status': c.get('status', ''),
-                         'project': c.get('project', ''), 'branch': c.get('branch', ''),
-                         'url': '%s/c/%s/+/%s' % (base, c.get('project', ''), c.get('_number'))})
-        return rows
+        return [{'number': c.get('_number'), 'subject': c.get('subject', ''), 'status': c.get('status', ''),
+                 'project': c.get('project', ''), 'branch': c.get('branch', ''), 'url': c['url']}
+                for c in wkcore.gerrit_query(cfg, q.format(days=days))]
 
-    mine = query(g.get('query_mine', 'owner:self -age:{days}d').format(days=days))
-    reviewed = query(g.get('query_reviewed', 'reviewer:self -owner:self -age:{days}d').format(days=days))
-    return mine, reviewed
+    return (query(g.get('query_mine', 'owner:self -age:{days}d')),
+            query(g.get('query_reviewed', 'reviewer:self -owner:self -age:{days}d')))
 
 
-def fetch_jira(cfg, days, net):
-    j = cfg['jira']
-    base = j['url'].rstrip('/')
-    jql = j.get('jql', 'assignee = currentUser() AND updated >= -{days}d ORDER BY updated DESC').format(days=days)
-    url = '%s%s?jql=%s&fields=summary,status,issuetype&maxResults=200' % (
-        base, j.get('api_path', '/rest/api/2/search'), urllib.parse.quote(jql))
-    data = json.loads(http_get(url, j, 'Jira', net))
+def fetch_jira(cfg, days):
+    jql = cfg['jira'].get('jql', 'assignee = currentUser() AND updated >= -{days}d ORDER BY updated DESC')
     out = []
-    for it in data.get('issues', []):
+    for it in wkcore.jira_search(cfg, jql.format(days=days), 'summary,status,issuetype'):
         f = it.get('fields', {})
         st = f.get('status') or {}
         out.append({'key': it['key'], 'summary': f.get('summary', ''), 'status': st.get('name', ''),
                     'category': (st.get('statusCategory') or {}).get('key', ''),
-                    'type': (f.get('issuetype') or {}).get('name', ''), 'url': '%s/browse/%s' % (base, it['key'])})
+                    'type': (f.get('issuetype') or {}).get('name', ''), 'url': it['url']})
     return out
 
 
@@ -177,11 +112,8 @@ def demo_data():
     return commits, mine, reviewed, issues
 
 
-SECTIONS = {'done': '완료', 'doing': '진행 중', 'loose': '이슈 번호 없는 작업', 'reviewed': '리뷰한 변경',
-            'extra': ['다음 주 계획', '이슈·도움이 필요한 점']}
-
-
-def build(commits, mine, reviewed, issues, days, errors, today=None, opts=None):
+def collect(commits, mine, reviewed, issues, days, errors, today=None, opts=None, todo_open=(), todo_done=()):
+    """모은 자료를 이슈 번호별로 묶는다. 글로 바꾸기 전의 자료다."""
     opts = opts or {}
     names = dict(SECTIONS, **(opts.get('sections') or {}))
     key_re = re.compile(opts['issue_key_pattern']) if opts.get('issue_key_pattern') else KEY_RE
@@ -213,61 +145,86 @@ def build(commits, mine, reviewed, issues, days, errors, today=None, opts=None):
             return v['issue']['category'] == 'done'
         return bool(v['changes']) and all(c['status'] == 'MERGED' for c in v['changes']) and not v['commits']
 
+    def slim(c):
+        return dict((k, c[k]) for k in ('repo', 'hash', 'date', 'subject'))
+
+    rows = []
+    for key, v in items.items():
+        issue = v['issue'] or {}
+        rows.append({'key': key, 'summary': issue.get('summary', ''), 'status': issue.get('status', ''),
+                     'type': issue.get('type', ''), 'url': issue.get('url', ''), 'in_jira': bool(v['issue']),
+                     'done': is_done(v), 'changes': v['changes'], 'commits': [slim(c) for c in v['commits']]})
+    return {'title': opts.get('title', '주간 보고'), 'start': start.isoformat(), 'end': today.isoformat(),
+            'days': days, 'errors': list(errors), 'sections': names, 'items': rows,
+            'loose_changes': loose_changes, 'loose_commits': [slim(c) for c in loose_commits],
+            'reviewed': reviewed, 'todo_open': list(todo_open), 'todo_done': list(todo_done)}
+
+
+def render_md(data):
+    names = data['sections']
+
     def change_line(c):
         return 'Gerrit %s %s: %s (%s, %s)' % (c['number'], c['status'], c['subject'], c['project'], c['branch'])
 
-    def section(title, rows):
-        out = ['', '## ' + title, '']
-        if not rows:
-            out.append('- (없음)')
-        for key, v in rows:
-            if v['issue']:
-                out.append('- [%s] %s — %s' % (key, v['issue']['summary'], v['issue']['status']))
+    def commit_line(c):
+        return '커밋 %s (%s, %s): %s' % (c['hash'], c['repo'], c['date'], c['subject'])
+
+    def issue_lines(rows):
+        out = []
+        for it in rows:
+            if it['in_jira']:
+                out.append('- [%s] %s — %s' % (it['key'], it['summary'], it['status']))
             else:
-                out.append('- [%s] (Jira 목록에 없음)' % key)
-            for c in v['changes']:
-                out.append('  - ' + change_line(c))
-            for c in v['commits']:
-                out.append('  - 커밋 %s (%s, %s): %s' % (c['hash'], c['repo'], c['date'], c['subject']))
+                out.append('- [%s] (Jira 목록에 없음)' % it['key'])
+            out += ['  - ' + change_line(c) for c in it['changes']]
+            out += ['  - ' + commit_line(c) for c in it['commits']]
         return out
 
-    w = ['# %s (%s ~ %s)' % (opts.get('title', '주간 보고'), start.strftime('%m-%d'), today.strftime('%m-%d'))]
-    for e in errors:
+    def section(title, lines, empty='- (없음)'):
+        return ['', '## ' + title, ''] + (lines or [empty])
+
+    w = ['# %s (%s ~ %s)' % (data['title'], data['start'][5:], data['end'][5:])]
+    for e in data['errors']:
         w += ['', '> ⚠ ' + e]
-    w += section(names['done'], [(k, v) for k, v in items.items() if is_done(v)])
-    w += section(names['doing'], [(k, v) for k, v in items.items() if not is_done(v)])
-    if loose_changes or loose_commits:
-        w += ['', '## ' + names['loose'], '']
-        w += ['- ' + change_line(c) for c in loose_changes]
-        w += ['- 커밋 %s (%s, %s): %s' % (c['hash'], c['repo'], c['date'], c['subject']) for c in loose_commits]
-    if reviewed:
-        w += ['', '## ' + names['reviewed'], '']
-        w += ['- ' + change_line(c) for c in reviewed]
-    for title in names['extra']:
-        w += ['', '## ' + title, '', '- ']
+    w += section(names['done'], issue_lines([it for it in data['items'] if it['done']])
+                 + ['- ' + t for t in data.get('todo_done', [])])
+    w += section(names['doing'], issue_lines([it for it in data['items'] if not it['done']]))
+    if data['loose_changes'] or data['loose_commits']:
+        w += section(names['loose'], ['- ' + change_line(c) for c in data['loose_changes']]
+                     + ['- ' + commit_line(c) for c in data['loose_commits']])
+    if data['reviewed']:
+        w += section(names['reviewed'], ['- ' + change_line(c) for c in data['reviewed']])
+    for i, title in enumerate(names['extra']):
+        w += section(title, ['- ' + t for t in data.get('todo_open', [])] if i == 0 else [], empty='- ')
     return '\n'.join(w) + '\n'
 
 
-def main(argv=None):
-    ap = argparse.ArgumentParser(description='git·Gerrit·Jira에서 내 한 주를 모아 주간 보고 초안을 만듭니다.')
-    ap.add_argument('-c', '--config', default='config.json', help='설정 파일 (기본 config.json)')
+def build(commits, mine, reviewed, issues, days, errors, today=None, opts=None, todo_open=(), todo_done=()):
+    return render_md(collect(commits, mine, reviewed, issues, days, errors, today=today, opts=opts,
+                             todo_open=todo_open, todo_done=todo_done))
+
+
+def main(argv=None, prog=None):
+    ap = argparse.ArgumentParser(prog=prog, description='git·Gerrit·Jira·할 일에서 내 한 주를 모아 주간 보고 초안을 만듭니다.')
+    ap.add_argument('-c', '--config', help='설정 파일 (기본 wk.json)')
     ap.add_argument('-o', '--out', help='결과를 저장할 파일(없으면 화면에 출력)')
     ap.add_argument('--days', type=int, help='며칠 치를 볼지 (기본은 설정 파일 값 또는 7)')
-    ap.add_argument('--only', help='가져올 곳만 고르기: git,gerrit,jira')
+    ap.add_argument('--only', default='git,gerrit,jira,todo', help='가져올 곳만 고르기: git,gerrit,jira,todo')
     ap.add_argument('--prompt', action='store_true', help='사내 AI에 붙여 넣을 주문서를 맨 위에 붙인다')
+    ap.add_argument('--json', action='store_true', help='글 대신 자료(JSON)로 출력한다')
     ap.add_argument('--demo', action='store_true', help='가짜 자료로 모양만 본다(접속 없음)')
     args = ap.parse_args(argv)
 
     errors = []
     cfg = {}
+    todo_open, todo_done = [], []
     if args.demo:
         days = args.days or 7
         commits, mine, reviewed, issues = demo_data()
     else:
-        with io.open(args.config, encoding='utf-8-sig') as f:
-            cfg = json.load(f)
+        cfg = wkcore.load_config(args.config, required=True)
         days = args.days or cfg.get('days', 7)
-        only = set((args.only or 'git,gerrit,jira').split(','))
+        only = set(args.only.split(','))
         commits, mine, reviewed, issues = [], [], [], []
 
         def attempt(name, fn):
@@ -282,29 +239,30 @@ def main(argv=None):
         if 'git' in only and cfg.get('git_repos'):
             commits = attempt('git', lambda: fetch_git(cfg, days)) or []
         if 'gerrit' in only and (cfg.get('gerrit') or {}).get('url'):
-            got = attempt('Gerrit', lambda: fetch_gerrit(cfg, days, cfg))
+            got = attempt('Gerrit', lambda: fetch_gerrit(cfg, days))
             if got:
                 mine, reviewed = got
         if 'jira' in only and (cfg.get('jira') or {}).get('url'):
-            issues = attempt('Jira', lambda: fetch_jira(cfg, days, cfg)) or []
+            issues = attempt('Jira', lambda: fetch_jira(cfg, days)) or []
+        if 'todo' in only:
+            start = (datetime.date.today() - datetime.timedelta(days=days)).isoformat()
+            todo_open, todo_done = todo.open_items(cfg), todo.done_since(cfg, start)
         for e in errors:
             sys.stderr.write('⚠ %s\n' % e)
 
-    text = build(commits, mine, reviewed, issues, days, errors, opts=cfg.get('report'))
-    if args.prompt:
-        prompt = PROMPT
-        if cfg.get('prompt_file'):
-            with io.open(cfg['prompt_file'], encoding='utf-8-sig') as f:
-                prompt = f.read().rstrip('\n') + '\n'
-        text = prompt + '\n' + text
-    if args.out:
-        with io.open(args.out, 'w', encoding='utf-8') as f:
-            f.write(text)
-        sys.stderr.write('저장: %s\n' % args.out)
+    data = collect(commits, mine, reviewed, issues, days, errors, opts=cfg.get('report'),
+                   todo_open=todo_open, todo_done=todo_done)
+    if args.json:
+        text = json.dumps(data, ensure_ascii=False, indent=1) + '\n'
     else:
-        if hasattr(sys.stdout, 'reconfigure'):
-            sys.stdout.reconfigure(encoding='utf-8')
-        sys.stdout.write(text)
+        text = render_md(data)
+        if args.prompt:
+            prompt = PROMPT
+            if cfg.get('prompt_file'):
+                with io.open(wkcore.resolve(cfg, cfg['prompt_file']), encoding='utf-8-sig') as f:
+                    prompt = f.read().rstrip('\n') + '\n'
+            text = prompt + '\n' + text
+    wkcore.write_out(text, args.out)
     return 0
 
 

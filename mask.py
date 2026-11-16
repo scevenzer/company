@@ -7,9 +7,12 @@ PKG_001 같은 가짜 이름으로 바꾸고, 답을 받은 뒤 원래 이름으
 대응표(mask_map.json)는 이 PC에만 남는다. 밖으로 내보내지 않는다.
 파이썬 표준 라이브러리만 쓴다(3.6 이상). 네트워크를 쓰지 않는다.
 
-    python mask.py mask crash.txt -o crash_masked.txt
-    python mask.py unmask answer.txt -o answer_restored.txt
-    type crash.txt | python mask.py mask - > crash_masked.txt
+    wk mask mask crash.txt -o crash_masked.txt
+    wk mask unmask answer.txt -o answer_restored.txt
+    type crash.txt | wk mask mask - > crash_masked.txt
+
+이 파일 하나만 복사해 `python mask.py mask 파일` 로 써도 된다.
+가릴 이름은 wk.json 의 mask 칸에 적는다.
 """
 import argparse
 import collections
@@ -109,19 +112,31 @@ def do_unmask(text, mapping):
     return rx.sub(repl, text), count[0]
 
 
-def main(argv=None):
-    ap = argparse.ArgumentParser(description='사내 이름을 가짜 이름으로 바꾸고, 다시 되돌립니다.')
+def load_section(path, name):
+    """wk.json 에서 이 도구의 칸만 읽는다. 찾는 순서: 지정한 경로 → 지금 폴더 → 도구 폴더."""
+    here = os.path.dirname(os.path.abspath(__file__))
+    for p in ([path] if path else [os.path.join(os.getcwd(), 'wk.json'), os.path.join(here, 'wk.json')]):
+        if os.path.exists(p):
+            with io.open(p, encoding='utf-8-sig') as f:
+                return json.load(f).get(name) or {}
+    if path:
+        raise SystemExit('설정 파일이 없습니다: ' + path)
+    return {}
+
+
+def main(argv=None, prog=None):
+    ap = argparse.ArgumentParser(prog=prog, description='사내 이름을 가짜 이름으로 바꾸고, 다시 되돌립니다.')
     ap.add_argument('mode', choices=['mask', 'unmask'])
     ap.add_argument('input', help='입력 파일. 표준 입력은 -')
     ap.add_argument('-o', '--out', help='결과를 저장할 파일(없으면 화면에 출력)')
-    ap.add_argument('--rules', default='rules.json', help='가림 규칙 파일 (기본 rules.json, 없으면 기본 규칙만)')
+    ap.add_argument('-c', '--config', help='설정 파일 (기본 wk.json 의 mask 칸, 없으면 기본 규칙만)')
     ap.add_argument('--map', default='mask_map.json', help='대응표 파일 (기본 mask_map.json)')
     args = ap.parse_args(argv)
 
     mapping = load_json(args.map, {})
     text = read_text(args.input)
     if args.mode == 'mask':
-        rules = load_json(args.rules, DEFAULT_RULES)
+        rules = load_section(args.config, 'mask') or DEFAULT_RULES
         out, used = do_mask(text, rules, mapping)
         with io.open(args.map, 'w', encoding='utf-8') as f:
             json.dump(mapping, f, ensure_ascii=False, indent=1)
