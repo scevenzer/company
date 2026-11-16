@@ -50,6 +50,11 @@ def secret(cfg, label):
     raise RuntimeError('%s 비밀번호가 없습니다. 환경 변수 %s 를 넣어 주세요.' % (label, env or '(password_env 미설정)'))
 
 
+def expand(value):
+    """${이름} 을 환경 변수 값으로 바꾼다."""
+    return re.sub(r'\$\{(\w+)\}', lambda m: os.environ.get(m.group(1), ''), value)
+
+
 def http_get(url, cfg, label, net):
     handlers = []
     sslcfg = net.get('ssl', {})
@@ -61,8 +66,12 @@ def http_get(url, cfg, label, net):
     if net.get('no_proxy'):
         handlers.append(urllib.request.ProxyHandler({}))
     headers = {'Accept': 'application/json'}
+    for k, v in (cfg.get('headers') or {}).items():  # 쿠키·SSO 등 다른 인증은 여기로
+        headers[k] = expand(v)
     auth = cfg.get('auth', 'basic')
-    if auth == 'bearer':
+    if auth == 'none':
+        pass
+    elif auth == 'bearer':
         headers['Authorization'] = 'Bearer ' + secret(cfg, label)
     elif cfg.get('user'):
         pw = secret(cfg, label)
@@ -86,24 +95,26 @@ def fetch_git(cfg, days):
             p = subprocess.run(['git', '-C', repo, 'config', 'user.email'], stdout=subprocess.PIPE, stderr=subprocess.PIPE)
             author = p.stdout.decode('utf-8', 'replace').strip()
         cmd = ['git', '-C', repo, 'log', '--all', '--no-merges', '--since=%d days ago' % days,
-               '--date=short', '--pretty=format:%h%x09%ad%x09%s']
+               '--date=short', '--pretty=format:%h%x1f%ad%x1f%s%x1f%b%x1e']
         if author:
             cmd.append('--author=' + author)
         p = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
         if p.returncode != 0:
             raise RuntimeError('%s: %s' % (repo, p.stderr.decode('utf-8', 'replace').strip()))
         name = os.path.basename(os.path.normpath(repo))
-        for line in p.stdout.decode('utf-8', 'replace').splitlines():
-            parts = line.split('\t', 2)
-            if len(parts) == 3:
-                out.append({'repo': name, 'hash': parts[0], 'date': parts[1], 'subject': parts[2]})
+        for rec in p.stdout.decode('utf-8', 'replace').split('\x1e'):
+            parts = rec.strip('\r\n').split('\x1f')
+            if len(parts) == 4:
+                out.append({'repo': name, 'hash': parts[0], 'date': parts[1], 'subject': parts[2], 'body': parts[3]})
     return out
 
 
 def fetch_gerrit(cfg, days, net):
     g = cfg['gerrit']
     base = g['url'].rstrip('/')
-    prefix = '/a' if (g.get('user') or g.get('auth') == 'bearer') else ''
+    prefix = g.get('api_prefix')
+    if prefix is None:
+        prefix = '/a' if (g.get('user') or g.get('auth') == 'bearer') else ''
 
     def query(q):
         url = '%s%s/changes/?q=%s&n=200' % (base, prefix, urllib.parse.quote(q))
@@ -126,7 +137,8 @@ def fetch_jira(cfg, days, net):
     j = cfg['jira']
     base = j['url'].rstrip('/')
     jql = j.get('jql', 'assignee = currentUser() AND updated >= -{days}d ORDER BY updated DESC').format(days=days)
-    url = '%s/rest/api/2/search?jql=%s&fields=summary,status,issuetype&maxResults=200' % (base, urllib.parse.quote(jql))
+    url = '%s%s?jql=%s&fields=summary,status,issuetype&maxResults=200' % (
+        base, j.get('api_path', '/rest/api/2/search'), urllib.parse.quote(jql))
     data = json.loads(http_get(url, j, 'Jira', net))
     out = []
     for it in data.get('issues', []):
@@ -165,7 +177,14 @@ def demo_data():
     return commits, mine, reviewed, issues
 
 
-def build(commits, mine, reviewed, issues, days, errors, today=None):
+SECTIONS = {'done': '완료', 'doing': '진행 중', 'loose': '이슈 번호 없는 작업', 'reviewed': '리뷰한 변경',
+            'extra': ['다음 주 계획', '이슈·도움이 필요한 점']}
+
+
+def build(commits, mine, reviewed, issues, days, errors, today=None, opts=None):
+    opts = opts or {}
+    names = dict(SECTIONS, **(opts.get('sections') or {}))
+    key_re = re.compile(opts['issue_key_pattern']) if opts.get('issue_key_pattern') else KEY_RE
     today = today or datetime.date.today()
     start = today - datetime.timedelta(days=days)
     items = collections.OrderedDict()
@@ -175,7 +194,7 @@ def build(commits, mine, reviewed, issues, days, errors, today=None):
     change_subjects = set(c['subject'] for c in mine)
 
     for c in mine:
-        m = KEY_RE.search(c['subject'])
+        m = key_re.search(c['subject'])
         if m:
             items.setdefault(m.group(0), {'issue': None, 'changes': [], 'commits': []})['changes'].append(c)
         else:
@@ -183,7 +202,7 @@ def build(commits, mine, reviewed, issues, days, errors, today=None):
     for c in commits:
         if c['subject'] in change_subjects:
             continue
-        m = KEY_RE.search(c['subject'])
+        m = key_re.search(c['subject']) or key_re.search(c.get('body', ''))
         if m:
             items.setdefault(m.group(0), {'issue': None, 'changes': [], 'commits': []})['commits'].append(c)
         else:
@@ -212,19 +231,20 @@ def build(commits, mine, reviewed, issues, days, errors, today=None):
                 out.append('  - 커밋 %s (%s, %s): %s' % (c['hash'], c['repo'], c['date'], c['subject']))
         return out
 
-    w = ['# 주간 보고 (%s ~ %s)' % (start.strftime('%m-%d'), today.strftime('%m-%d'))]
+    w = ['# %s (%s ~ %s)' % (opts.get('title', '주간 보고'), start.strftime('%m-%d'), today.strftime('%m-%d'))]
     for e in errors:
         w += ['', '> ⚠ ' + e]
-    w += section('완료', [(k, v) for k, v in items.items() if is_done(v)])
-    w += section('진행 중', [(k, v) for k, v in items.items() if not is_done(v)])
+    w += section(names['done'], [(k, v) for k, v in items.items() if is_done(v)])
+    w += section(names['doing'], [(k, v) for k, v in items.items() if not is_done(v)])
     if loose_changes or loose_commits:
-        w += ['', '## 이슈 번호 없는 작업', '']
+        w += ['', '## ' + names['loose'], '']
         w += ['- ' + change_line(c) for c in loose_changes]
         w += ['- 커밋 %s (%s, %s): %s' % (c['hash'], c['repo'], c['date'], c['subject']) for c in loose_commits]
     if reviewed:
-        w += ['', '## 리뷰한 변경', '']
+        w += ['', '## ' + names['reviewed'], '']
         w += ['- ' + change_line(c) for c in reviewed]
-    w += ['', '## 다음 주 계획', '', '- ', '', '## 이슈·도움이 필요한 점', '', '- ']
+    for title in names['extra']:
+        w += ['', '## ' + title, '', '- ']
     return '\n'.join(w) + '\n'
 
 
@@ -239,11 +259,12 @@ def main(argv=None):
     args = ap.parse_args(argv)
 
     errors = []
+    cfg = {}
     if args.demo:
         days = args.days or 7
         commits, mine, reviewed, issues = demo_data()
     else:
-        with io.open(args.config, encoding='utf-8') as f:
+        with io.open(args.config, encoding='utf-8-sig') as f:
             cfg = json.load(f)
         days = args.days or cfg.get('days', 7)
         only = set((args.only or 'git,gerrit,jira').split(','))
@@ -269,9 +290,13 @@ def main(argv=None):
         for e in errors:
             sys.stderr.write('⚠ %s\n' % e)
 
-    text = build(commits, mine, reviewed, issues, days, errors)
+    text = build(commits, mine, reviewed, issues, days, errors, opts=cfg.get('report'))
     if args.prompt:
-        text = PROMPT + '\n' + text
+        prompt = PROMPT
+        if cfg.get('prompt_file'):
+            with io.open(cfg['prompt_file'], encoding='utf-8-sig') as f:
+                prompt = f.read().rstrip('\n') + '\n'
+        text = prompt + '\n' + text
     if args.out:
         with io.open(args.out, 'w', encoding='utf-8') as f:
             f.write(text)

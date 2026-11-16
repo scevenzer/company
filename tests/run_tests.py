@@ -70,6 +70,27 @@ def test_android_log():
     an3.finalize()
     assert an3.events[0]['title'] == 'java.lang.IllegalStateException: boom', an3.events
 
+    # 설정 파일만으로 새 줄 형식과 새 사건 규칙을 더할 수 있어야 한다
+    with io.open(os.path.join(ROOT, 'android_log.sample.json'), encoding='utf-8') as f:
+        cfg = json.load(f)
+    cfg['events'] = [{'name': '결제 실패', 'pattern': r'payment failed code=\d+', 'tag': 'PayModule'}]
+    studio = ['2026-11-16 10:00:00.123  777-777  AndroidRuntime          com.example.new  E  FATAL EXCEPTION: main',
+              '                                                    Process: com.example.new, PID: 777',
+              '                                                    java.lang.IllegalStateException: boom',
+              '                                                    \tat com.example.new.Main.run(Main.java:10)',
+              '2026-11-16 10:00:05.000  777-777  PayModule               com.example.new  E  payment failed code=31',
+              '2026-11-16 10:00:09.000  777-777  PayModule               com.example.new  E  payment failed code=42']
+    an4 = android_log.Analyzer(cfg=cfg)
+    an4.feed('studio', studio)
+    an4.finalize()
+    kinds = [ev['kind'] for ev in an4.events]
+    assert kinds == ['java', 'custom', 'custom'], kinds
+    assert an4.events[0]['title'] == 'java.lang.IllegalStateException: boom', an4.events[0]
+    assert an4.events[0]['proc'] == 'com.example.new' and an4.events[0]['ts'] == '11-16 10:00:00.123'
+    custom = [g for g in an4.groups() if g['sample']['kind'] == 'custom']
+    assert len(custom) == 1 and custom[0]['count'] == 2 and custom[0]['sample']['label'] == '결제 실패', custom
+    assert '결제 실패 2건 (1종류)' in android_log.render(an4)
+
 
 def test_mask():
     rules = {'builtin': ['email', 'url_host', 'mac', 'ip'],
@@ -153,6 +174,17 @@ def test_weekly():
     with contextlib.redirect_stdout(io.StringIO()) as buf:
         weekly_report.main(['--demo'])
     assert 'APP-125' in buf.getvalue()
+
+    # 칸 이름과 이슈 번호 규칙은 설정으로 바꾼다
+    opts = {'title': 'Weekly', 'issue_key_pattern': r'#\d+',
+            'sections': {'done': 'Done', 'doing': 'In progress', 'extra': ['Plan']}}
+    commits = [{'repo': 'r', 'hash': 'abc', 'date': '2026-11-10', 'subject': 'Fix crash', 'body': 'Refs: #77'}]
+    text = weekly_report.build(commits, [], [], [], 7, [], opts=opts)
+    assert text.startswith('# Weekly (') and '## Done' in text and '## Plan' in text, text
+    assert '[#77]' in text.split('## In progress')[1] and '다음 주 계획' not in text, text
+
+    os.environ['WT_COOKIE'] = 'sid=1'
+    assert weekly_report.expand('a ${WT_COOKIE} b') == 'a sid=1 b'
 
 
 if __name__ == '__main__':

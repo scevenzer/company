@@ -50,24 +50,33 @@ KIND_NAME = collections.OrderedDict([
     ('anr', 'ANR'),
     ('anr_trace', 'ANR 스택(traces)'),
     ('oom', '메모리 부족(OOM)'),
+    ('custom', '사용자 규칙'),
     ('lmk', '저메모리 종료'),
     ('died', '프로세스 종료'),
 ])
 MINOR = ('lmk', 'died')
 
 
-def parse_line(line):
+def parse_line(line, extra=()):
     m = LINE_RE.match(line)
-    if not m:
-        return None
-    ts = m.group(1)
-    if ts:
-        ts = ' '.join(ts.split())[:18]
-    if m.group(4):
-        if not ts:
-            return None
-        return Entry(ts, int(m.group(2)), int(m.group(3)), m.group(4), m.group(5), m.group(6))
-    return Entry(ts, int(m.group(9)), None, m.group(7), m.group(8).strip(), m.group(10))
+    if m:
+        ts = m.group(1)
+        if ts:
+            ts = ' '.join(ts.split())[:18]
+        if m.group(7):
+            return Entry(ts, int(m.group(9)), None, m.group(7), m.group(8).strip(), m.group(10))
+        if ts:
+            return Entry(ts, int(m.group(2)), int(m.group(3)), m.group(4), m.group(5), m.group(6))
+    for rx in extra:  # 설정 파일의 line_patterns (이름 붙은 그룹: ts pid tid level tag msg)
+        m = rx.match(line)
+        if m:
+            d = m.groupdict()
+            ts = d.get('ts')
+            if ts:
+                ts = re.sub(r'^\d{4}-', '', ' '.join(ts.split()))[:18]
+            return Entry(ts, int(d.get('pid') or 0), int(d['tid']) if d.get('tid') else None,
+                         d.get('level') or 'I', (d.get('tag') or '').strip(), d.get('msg') or '')
+    return None
 
 
 def strip_lineno(frame):
@@ -104,8 +113,13 @@ class Block(object):
 
 
 class Analyzer(object):
-    def __init__(self, context=15):
+    def __init__(self, context=15, cfg=None):
+        cfg = cfg or {}
         self.context = context
+        self.extra_lines = [re.compile(x) for x in cfg.get('line_patterns', [])]
+        self.continuation = bool(cfg.get('continuation_lines'))
+        self.custom = [(c['name'], re.compile(c['pattern']), c.get('tag'), c.get('levels'))
+                       for c in cfg.get('events', [])]
         self.events = []
         self.tag_err = collections.Counter()
         self.files = []
@@ -120,10 +134,14 @@ class Analyzer(object):
         first_trace = True
         count = 0
         first_ts = last_ts = None
+        last = None
         for lineno, line in enumerate(lines, 1):
             count = lineno
             line = line.rstrip('\r\n')
-            e = parse_line(line)
+            e = parse_line(line, self.extra_lines)
+            if (e is None and self.continuation and plain is None and last is not None and line.strip()
+                    and (line[:1] in ' \t' or line.startswith('Caused by:'))):
+                e = last._replace(msg=line)  # 머리말 없이 이어지는 줄(스택 등)은 앞 줄에 붙인다
             if e is None:
                 s = line.strip()
                 tm = TRACE_START.match(s)
@@ -180,8 +198,9 @@ class Analyzer(object):
                 blocks = keep
                 blocks.append(Block(kind, e, name, lineno, list(recent)))
             else:
-                self._one_line(e, name, lineno)
+                self._one_line(e, name, lineno, recent)
             recent.append(e)
+            last = e
 
         for b in blocks:
             self._finish(b)
@@ -198,7 +217,7 @@ class Analyzer(object):
             return 'native'
         return None
 
-    def _one_line(self, e, src, lineno):
+    def _one_line(self, e, src, lineno, recent=()):
         if e.tag == 'ActivityManager':
             m = START_PROC.search(e.msg)
             if m:
@@ -225,9 +244,21 @@ class Analyzer(object):
                 sig = (proc or '') + re.sub(r'\d+', 'N', m.group(1))
             self._add(kind, e.ts, proc, pid, title, sig, [e.msg], [], src, lineno)
             return
+        for name, rx, tag, levels in self.custom:  # 설정 파일의 events
+            if (tag and e.tag != tag) or (levels and e.level not in levels):
+                continue
+            m = rx.search(e.msg)
+            if not m:
+                continue
+            proc = m.groupdict().get('proc') or self.pidname.get(e.pid)
+            sig = name + '|' + re.sub(r'0x[0-9a-fA-F]+|\d+', 'N', e.msg)
+            self._add('custom', e.ts, proc, e.pid, short(e.msg), sig, ['%s: %s' % (e.tag, e.msg)],
+                      self._context(list(recent), e.pid), src, lineno, label=name)
+            return
 
-    def _add(self, kind, ts, proc, pid, title, sig, detail, context, src, lineno):
-        self.events.append({'kind': kind, 'ts': ts, 'proc': proc, 'pid': pid, 'title': title,
+    def _add(self, kind, ts, proc, pid, title, sig, detail, context, src, lineno, label=None):
+        self.events.append({'kind': kind, 'label': label or KIND_NAME[kind],
+                            'ts': ts, 'proc': proc, 'pid': pid, 'title': title,
                             'sig': sig, 'detail': detail, 'context': context,
                             'src': src, 'lineno': lineno})
 
@@ -248,7 +279,7 @@ class Analyzer(object):
         exc = root = None
         frames, first_frames = [], None
         for m in b.msgs[1:]:
-            pm = re.match(r'Process: (\S+?),? PID: (\d+)', m)
+            pm = re.match(r'Process: (\S+?),? PID: (\d+)', m.strip())
             if pm:
                 proc, pid = pm.group(1), int(pm.group(2))
                 continue
@@ -409,18 +440,19 @@ def render(an, top=20, timeline=100):
     w += ['', '## 한눈에', '']
     if not major:
         w.append('크래시·ANR을 찾지 못했습니다.')
-    for kind, label in KIND_NAME.items():
-        if kind in MINOR:
-            continue
-        n = sum(1 for ev in major if ev['kind'] == kind)
-        if n:
-            kinds = sum(1 for g in groups if g['sample']['kind'] == kind)
-            w.append('- %s %d건 (%d종류)' % (label, n, kinds))
+    order = list(KIND_NAME)
+    tally = collections.OrderedDict()
+    for ev in sorted(major, key=lambda ev: order.index(ev['kind'])):
+        t = tally.setdefault(ev['label'], [0, set()])
+        t[0] += 1
+        t[1].add(ev['sig'])
+    for label, (n, sigs) in tally.items():
+        w.append('- %s %d건 (%d종류)' % (label, n, len(sigs)))
 
     if major:
         w += ['', '## 시간순', '']
         for ev in major[:timeline]:
-            w.append('- `%s` %s · %s · %s' % (ev['ts'] or '시각 없음', KIND_NAME[ev['kind']],
+            w.append('- `%s` %s · %s · %s' % (ev['ts'] or '시각 없음', ev['label'],
                                              ev['proc'] or 'pid %s' % ev['pid'], ev['title']))
         if len(major) > timeline:
             w.append('- … 외 %d건' % (len(major) - timeline))
@@ -428,7 +460,7 @@ def render(an, top=20, timeline=100):
         w += ['', '## 상세 (많이 난 순서)']
         for i, g in enumerate(groups[:top], 1):
             ev = g['sample']
-            w += ['', '### %d. %s — %s (%d회)' % (i, KIND_NAME[ev['kind']], ev['title'], g['count']), '']
+            w += ['', '### %d. %s — %s (%d회)' % (i, ev['label'], ev['title'], g['count']), '']
             w.append('- 프로세스: %s (pid %s)' % (', '.join(g['procs']) or '알 수 없음', ev['pid']))
             if g['count'] > 1:
                 w.append('- 처음: %s / 마지막: %s' % (ev['ts'], g['last']))
@@ -493,9 +525,15 @@ def main(argv=None):
     ap.add_argument('--context', type=int, default=15, help='크래시 직전 로그 줄 수 (기본 15)')
     ap.add_argument('--top', type=int, default=20, help='상세로 보여 줄 종류 수 (기본 20)')
     ap.add_argument('--json', action='store_true', help='마크다운 대신 JSON으로 출력')
+    ap.add_argument('--config', default='android_log.json',
+                    help='추가 규칙 파일 (기본 android_log.json, 없으면 기본 규칙만)')
     args = ap.parse_args(argv)
 
-    an = Analyzer(context=args.context)
+    cfg = {}
+    if os.path.exists(args.config):
+        with io.open(args.config, encoding='utf-8-sig') as f:
+            cfg = json.load(f)
+    an = Analyzer(context=args.context, cfg=cfg)
     for name, lines in sources(args.paths):
         an.feed(name, lines)
     an.finalize(pkg=args.pkg)

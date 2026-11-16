@@ -1,0 +1,14 @@
+{
+  "line_patterns": [
+    "^(?P<ts>\\d{4}-\\d\\d-\\d\\d \\d\\d:\\d\\d:\\d\\d\\.\\d+)\\s+(?P<pid>\\d+)-(?P<tid>\\d+)\\s+(?P<tag>\\S+)\\s+\\S+\\s+(?P<level>[VDIWEA])\\s+(?P<msg>.*)$"
+  ],
+  "continuation_lines": true,
+  "events": [
+    {
+      "name": "결제 실패",
+      "pattern": "payment failed code=\\d+",
+      "tag": "PayModule",
+      "levels": "EF"
+    }
+  ]
+}
